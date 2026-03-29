@@ -1,0 +1,25 @@
+#!/bin/bash
+
+cmd="${1:-help}"
+root="${2:-.}"
+
+index_file="${root}/.findex"
+
+index_file(){
+    path="${1}"
+    file_size="$(wc -c < "${path}")"
+    file_hash="$(sha1sum "${path}")"
+    echo "${file_hash} ${file_size}"
+}
+
+
+case "${cmd}" in
+    help)
+        ;;
+    index)
+        truncate --size 0 "${index_file}"
+        for f in $(find "${root}" -type f|grep -v "${index_file}"); do
+            index_file "${f}" | tee -a "${index_file}"
+        done 
+        ;;
+esac
