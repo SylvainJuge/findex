@@ -15,6 +15,7 @@ index_file(){
 
 case "${cmd}" in
     help)
+      # TOOD: print help
         ;;
     index)
         truncate --size 0 "${index_file}"
