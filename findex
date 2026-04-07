@@ -103,12 +103,10 @@ index_total_stats(){
     local total_files=0
     local total_size=0
 
-    while IFS= read -r line; do
-        [[ -z "${line}" ]] && continue
-        local lhash lpath lsize
-        read -r lhash lpath lsize <<< "${line}"
+    while IFS='|' read -r ltype lhash lpath lsize; do
+        [[ -z "${ltype}" ]] && continue
 
-        if [[ "${lhash}" == "subindex" ]]; then
+        if [[ "${ltype}" == "s" ]]; then
             local sub_stats sub_files sub_size
             sub_stats="$(index_total_stats "${base_dir}/${lpath}" "${new_visited}")"
             read -r sub_files sub_size <<< "${sub_stats}"
@@ -303,11 +301,10 @@ case "${cmd}" in
 
         # Per sub-index stats (direct sub-indexes only, but each totals recursively)
         base_dir="$(dirname "${idx}")"
-        while IFS= read -r line; do
-            [[ -z "${line}" ]] && continue
-            read -r lhash lpath _ <<< "${line}"
+        while IFS='|' read -r ltype lhash lpath lsize; do
+            [[ -z "${ltype}" ]] && continue
 
-            if [[ "${lhash}" == "subindex" ]]; then
+            if [[ "${ltype}" == "s" ]]; then
                 sub_stats="$(index_total_stats "${base_dir}/${lpath}" "")"
                 read -r sub_files sub_size <<< "${sub_stats}"
                 echo "  Sub-index: ${lpath}"
