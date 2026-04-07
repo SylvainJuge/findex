@@ -1,26 +1,231 @@
 #!/bin/bash
 
 cmd="${1:-help}"
-root="${2:-.}"
 
-index_file="${root}/.findex"
-
+# Compute a single-file index entry: outputs "hash  path size"
 index_file(){
-    path="${1}"
+    local path="${1}"
+    local file_size
     file_size="$(wc -c < "${path}")"
+    local file_hash
     file_hash="$(sha1sum "${path}")"
     echo "${file_hash} ${file_size}"
 }
 
+# Read an index file, expanding sub-index entries inline.
+# Args: idx_file  prefix  visited
+#   prefix  : path prefix to prepend to entry paths (empty for top-level)
+#   visited : colon-separated list of already-visited absolute paths (cycle detection)
+read_index(){
+    local idx_file="${1}"
+    local prefix="${2:-}"
+    local visited="${3:-}"
+
+    if [[ ! -f "${idx_file}" ]]; then
+        return 0
+    fi
+
+    local abs_idx
+    abs_idx="$(realpath "${idx_file}" 2>/dev/null || echo "${idx_file}")"
+
+    # Cycle detection
+    if [[ ":${visited}:" == *":${abs_idx}:"* ]]; then
+        echo "Error: circular sub-index reference detected at ${idx_file}" >&2
+        return 1
+    fi
+    local new_visited="${visited}:${abs_idx}"
+
+    local base_dir
+    base_dir="$(dirname "${idx_file}")"
+
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        local lhash lpath lsize
+        lhash="$(echo "${line}" | awk '{print $1}')"
+        lpath="$(echo "${line}" | awk '{print $2}')"
+        lsize="$(echo "${line}" | awk '{print $3}')"
+
+        if [[ "${lhash}" == "subindex" ]]; then
+            # Expand sub-index recursively
+            local sub_dir sub_file sub_prefix
+            sub_dir="$(dirname "${lpath}")"
+            sub_file="${base_dir}/${lpath}"
+            if [[ -n "${prefix}" ]]; then
+                sub_prefix="${prefix}/${sub_dir}"
+            else
+                sub_prefix="${sub_dir}"
+            fi
+            read_index "${sub_file}" "${sub_prefix}" "${new_visited}"
+        else
+            # Regular entry: apply prefix to path if needed
+            if [[ -n "${prefix}" ]]; then
+                # Normalize: strip any leading ./ from lpath, then prepend ./prefix/
+                local adjusted="./${prefix}/${lpath#./}"
+                echo "${lhash}  ${adjusted} ${lsize}"
+            else
+                echo "${line}"
+            fi
+        fi
+    done < "${idx_file}"
+}
 
 case "${cmd}" in
     help)
-      # TOOD: print help
+        echo "Usage: findex <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  index [root]       Create/update index at root (default: current dir)"
+        echo "  read [root]        Output index content to stdout, expanding sub-indexes"
+        echo "  split <subfolder>  Create a sub-index for the given subfolder"
+        echo "  merge <subfolder>  Merge a sub-index back into its parent index"
         ;;
     index)
-        truncate --size 0 "${index_file}"
-        for f in $(find "${root}" -type f|grep -v "${index_file}"); do
-            index_file "${f}" | tee -a "${index_file}"
-        done 
+        root="${2:-.}"
+        root_real="$(realpath "${root}" 2>/dev/null || echo "${root}")"
+        idx="${root_real}/.findex"
+        truncate --size 0 "${idx}"
+
+        # Work inside root so all paths stored in the index are relative to root
+        pushd "${root_real}" > /dev/null
+
+        # Index files, skipping those inside any sub-indexed subdirectory
+        while IFS= read -r f; do
+            # Walk up from file's directory; skip if any ancestor (before ".") has a .findex
+            fdir="$(dirname "${f}")"
+            in_sub=false
+            check="${fdir}"
+            while [[ "${check}" != "." ]]; do
+                if [[ -f "${check}/.findex" ]]; then
+                    in_sub=true
+                    break
+                fi
+                parent="$(dirname "${check}")"
+                [[ "${parent}" == "${check}" ]] && break
+                check="${parent}"
+            done
+            if [[ "${in_sub}" == "false" ]]; then
+                index_file "${f}" | tee -a "${idx}"
+            fi
+        done < <(find "." -type f | grep -v "\.findex$")
+
+        # Add a sub-index marker for each direct-child subdirectory that has a .findex
+        while IFS= read -r sub_idx; do
+            sub_dir="${sub_idx%/.findex}"
+            sub_dir_name="$(basename "${sub_dir}")"
+            echo "subindex  ${sub_dir_name}/.findex 0" | tee -a "${idx}"
+        done < <(find "." -mindepth 2 -maxdepth 2 -name ".findex")
+
+        popd > /dev/null
+        ;;
+    read)
+        root="${2:-.}"
+        idx="${root}/.findex"
+        if [[ -f "${idx}" ]]; then
+            read_index "${idx}" "" ""
+        fi
+        ;;
+    split)
+        subfolder="${2}"
+        if [[ -z "${subfolder}" ]]; then
+            echo "Error: split requires a subfolder path argument" >&2
+            exit 1
+        fi
+        subfolder="${subfolder%/}"
+        subfolder="$(realpath "${subfolder}" 2>/dev/null || echo "${subfolder}")"
+        root="$(dirname "${subfolder}")"
+        root_index="${root}/.findex"
+        sub_index="${subfolder}/.findex"
+        subfolder_name="$(basename "${subfolder}")"
+
+        # Create the sub-index marker if it does not yet exist
+        touch "${sub_index}"
+
+        if [[ -f "${root_index}" ]]; then
+            tmp_parent="$(mktemp)"
+            tmp_sub="$(mktemp)"
+
+            # Seed tmp_sub with any existing sub-index content so it is preserved
+            cat "${sub_index}" > "${tmp_sub}"
+
+            while IFS= read -r line; do
+                [[ -z "${line}" ]] && continue
+                lhash="$(echo "${line}" | awk '{print $1}')"
+                lpath="$(echo "${line}" | awk '{print $2}')"
+                lsize="$(echo "${line}" | awk '{print $3}')"
+
+                # Skip any existing sub-index marker for this subfolder (re-added below)
+                if [[ "${lpath}" == "${subfolder_name}/.findex" ]]; then
+                    continue
+                fi
+
+                # Move entries whose path is within the subfolder to the sub-index
+                if [[ "${lpath}" == "./${subfolder_name}/"* ]] || [[ "${lpath}" == "${subfolder_name}/"* ]]; then
+                    # Adjust path: strip subfolder prefix, keep leading ./
+                    if [[ "${lpath}" == "./${subfolder_name}/"* ]]; then
+                        new_path="./${lpath#./${subfolder_name}/}"
+                    else
+                        new_path="./${lpath#${subfolder_name}/}"
+                    fi
+                    echo "${lhash}  ${new_path} ${lsize}" >> "${tmp_sub}"
+                else
+                    echo "${line}" >> "${tmp_parent}"
+                fi
+            done < "${root_index}"
+
+            # Add sub-index marker to parent
+            echo "subindex  ${subfolder_name}/.findex 0" >> "${tmp_parent}"
+
+            mv "${tmp_parent}" "${root_index}"
+            mv "${tmp_sub}" "${sub_index}"
+        fi
+        ;;
+    merge)
+        subfolder="${2}"
+        if [[ -z "${subfolder}" ]]; then
+            echo "Error: merge requires a subfolder path argument" >&2
+            exit 1
+        fi
+        subfolder="${subfolder%/}"
+        subfolder="$(realpath "${subfolder}" 2>/dev/null || echo "${subfolder}")"
+        root="$(dirname "${subfolder}")"
+        root_index="${root}/.findex"
+        sub_index="${subfolder}/.findex"
+        subfolder_name="$(basename "${subfolder}")"
+
+        if [[ ! -f "${sub_index}" ]]; then
+            echo "Error: no sub-index found at ${sub_index}" >&2
+            exit 1
+        fi
+
+        tmp_parent="$(mktemp)"
+
+        # Copy parent entries, removing the sub-index marker for this subfolder
+        if [[ -f "${root_index}" ]]; then
+            while IFS= read -r line; do
+                [[ -z "${line}" ]] && continue
+                lpath="$(echo "${line}" | awk '{print $2}')"
+                if [[ "${lpath}" == "${subfolder_name}/.findex" ]]; then
+                    continue
+                fi
+                echo "${line}" >> "${tmp_parent}"
+            done < "${root_index}"
+        fi
+
+        # Add sub-index entries to parent with adjusted paths
+        while IFS= read -r line; do
+            [[ -z "${line}" ]] && continue
+            lhash="$(echo "${line}" | awk '{print $1}')"
+            lpath="$(echo "${line}" | awk '{print $2}')"
+            lsize="$(echo "${line}" | awk '{print $3}')"
+            if [[ "${lpath}" == "./"* ]]; then
+                new_path="./${subfolder_name}/${lpath#./}"
+            else
+                new_path="./${subfolder_name}/${lpath}"
+            fi
+            echo "${lhash}  ${new_path} ${lsize}" >> "${tmp_parent}"
+        done < "${sub_index}"
+
+        mv "${tmp_parent}" "${root_index}"
+        rm "${sub_index}"
         ;;
 esac
