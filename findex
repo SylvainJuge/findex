@@ -2,14 +2,14 @@
 
 cmd="${1:-help}"
 
-# Compute a single-file index entry: outputs "hash  path size"
+# Compute a single-file index entry: outputs "hash|path|size"
 index_file(){
     local path="${1}"
     local file_size
     file_size="$(wc -c < "${path}")"
     local file_hash
-    file_hash="$(sha1sum "${path}")"
-    echo "${file_hash} ${file_size}"
+    file_hash="$(sha1sum "${path}" | awk '{print $1}')"
+    echo "${file_hash}|${path}|${file_size}"
 }
 
 # Read an index file, expanding sub-index entries inline.
@@ -41,9 +41,9 @@ read_index(){
     while IFS= read -r line; do
         [[ -z "${line}" ]] && continue
         local lhash lpath lsize
-        lhash="$(echo "${line}" | awk '{print $1}')"
-        lpath="$(echo "${line}" | awk '{print $2}')"
-        lsize="$(echo "${line}" | awk '{print $3}')"
+        lhash="$(echo "${line}" | awk -F'|' '{print $1}')"
+        lpath="$(echo "${line}" | awk -F'|' '{print $2}')"
+        lsize="$(echo "${line}" | awk -F'|' '{print $3}')"
 
         if [[ "${lhash}" == "subindex" ]]; then
             # Expand sub-index recursively
@@ -61,7 +61,7 @@ read_index(){
             if [[ -n "${prefix}" ]]; then
                 # Normalize: strip any leading ./ from lpath, then prepend ./prefix/
                 local adjusted="./${prefix}/${lpath#./}"
-                echo "${lhash}  ${adjusted} ${lsize}"
+                echo "${lhash}|${adjusted}|${lsize}"
             else
                 echo "${line}"
             fi
@@ -112,7 +112,7 @@ case "${cmd}" in
         while IFS= read -r sub_idx; do
             sub_dir="${sub_idx%/.findex}"
             sub_dir_name="$(basename "${sub_dir}")"
-            echo "subindex  ${sub_dir_name}/.findex 0" | tee -a "${idx}"
+            echo "subindex|${sub_dir_name}/.findex|0" | tee -a "${idx}"
         done < <(find "." -mindepth 2 -maxdepth 2 -name ".findex")
 
         popd > /dev/null
@@ -149,9 +149,9 @@ case "${cmd}" in
 
             while IFS= read -r line; do
                 [[ -z "${line}" ]] && continue
-                lhash="$(echo "${line}" | awk '{print $1}')"
-                lpath="$(echo "${line}" | awk '{print $2}')"
-                lsize="$(echo "${line}" | awk '{print $3}')"
+                lhash="$(echo "${line}" | awk -F'|' '{print $1}')"
+                lpath="$(echo "${line}" | awk -F'|' '{print $2}')"
+                lsize="$(echo "${line}" | awk -F'|' '{print $3}')"
 
                 # Skip any existing sub-index marker for this subfolder (re-added below)
                 if [[ "${lpath}" == "${subfolder_name}/.findex" ]]; then
@@ -166,14 +166,14 @@ case "${cmd}" in
                     else
                         new_path="./${lpath#${subfolder_name}/}"
                     fi
-                    echo "${lhash}  ${new_path} ${lsize}" >> "${tmp_sub}"
+                    echo "${lhash}|${new_path}|${lsize}" >> "${tmp_sub}"
                 else
                     echo "${line}" >> "${tmp_parent}"
                 fi
             done < "${root_index}"
 
             # Add sub-index marker to parent
-            echo "subindex  ${subfolder_name}/.findex 0" >> "${tmp_parent}"
+            echo "subindex|${subfolder_name}/.findex|0" >> "${tmp_parent}"
 
             mv "${tmp_parent}" "${root_index}"
             mv "${tmp_sub}" "${sub_index}"
@@ -203,7 +203,7 @@ case "${cmd}" in
         if [[ -f "${root_index}" ]]; then
             while IFS= read -r line; do
                 [[ -z "${line}" ]] && continue
-                lpath="$(echo "${line}" | awk '{print $2}')"
+                lpath="$(echo "${line}" | awk -F'|' '{print $2}')"
                 if [[ "${lpath}" == "${subfolder_name}/.findex" ]]; then
                     continue
                 fi
@@ -214,15 +214,15 @@ case "${cmd}" in
         # Add sub-index entries to parent with adjusted paths
         while IFS= read -r line; do
             [[ -z "${line}" ]] && continue
-            lhash="$(echo "${line}" | awk '{print $1}')"
-            lpath="$(echo "${line}" | awk '{print $2}')"
-            lsize="$(echo "${line}" | awk '{print $3}')"
+            lhash="$(echo "${line}" | awk -F'|' '{print $1}')"
+            lpath="$(echo "${line}" | awk -F'|' '{print $2}')"
+            lsize="$(echo "${line}" | awk -F'|' '{print $3}')"
             if [[ "${lpath}" == "./"* ]]; then
                 new_path="./${subfolder_name}/${lpath#./}"
             else
                 new_path="./${subfolder_name}/${lpath}"
             fi
-            echo "${lhash}  ${new_path} ${lsize}" >> "${tmp_parent}"
+            echo "${lhash}|${new_path}|${lsize}" >> "${tmp_parent}"
         done < "${sub_index}"
 
         mv "${tmp_parent}" "${root_index}"
