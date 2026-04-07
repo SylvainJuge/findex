@@ -71,18 +71,7 @@ read_index(){
 
 # Convert bytes to human-readable size
 human_size(){
-    local bytes="${1}"
-    if [[ "${bytes}" -lt 1024 ]]; then
-        echo "${bytes} B"
-    elif [[ "${bytes}" -lt $((1024 * 1024)) ]]; then
-        echo "$(( bytes / 1024 )) KB"
-    elif [[ "${bytes}" -lt $((1024 * 1024 * 1024)) ]]; then
-        echo "$(( bytes / 1024 / 1024 )) MB"
-    elif [[ "${bytes}" -lt $((1024 * 1024 * 1024 * 1024)) ]]; then
-        echo "$(( bytes / 1024 / 1024 / 1024 )) GB"
-    else
-        echo "$(( bytes / 1024 / 1024 / 1024 / 1024 )) TB"
-    fi
+    numfmt --to=iec "${1}"
 }
 
 # Recursively compute stats (file count, total bytes) for an index file.
