@@ -69,6 +69,72 @@ read_index(){
     done < "${idx_file}"
 }
 
+# Convert bytes to human-readable size
+human_size(){
+    local bytes="${1}"
+    if [[ "${bytes}" -lt 1024 ]]; then
+        echo "${bytes} B"
+    elif [[ "${bytes}" -lt $((1024 * 1024)) ]]; then
+        echo "$(( bytes / 1024 )) KB"
+    elif [[ "${bytes}" -lt $((1024 * 1024 * 1024)) ]]; then
+        echo "$(( bytes / 1024 / 1024 )) MB"
+    elif [[ "${bytes}" -lt $((1024 * 1024 * 1024 * 1024)) ]]; then
+        echo "$(( bytes / 1024 / 1024 / 1024 )) GB"
+    else
+        echo "$(( bytes / 1024 / 1024 / 1024 / 1024 )) TB"
+    fi
+}
+
+# Recursively compute stats (file count, total bytes) for an index file.
+# Outputs: "file_count total_bytes"
+# Args: idx_file  visited
+index_total_stats(){
+    local idx_file="${1}"
+    local visited="${2:-}"
+
+    if [[ ! -f "${idx_file}" ]]; then
+        echo "0 0"
+        return 0
+    fi
+
+    local abs_idx
+    abs_idx="$(realpath "${idx_file}" 2>/dev/null || echo "${idx_file}")"
+
+    if [[ ":${visited}:" == *":${abs_idx}:"* ]]; then
+        echo "0 0"
+        return 0
+    fi
+    local new_visited="${visited}:${abs_idx}"
+
+    local base_dir
+    base_dir="$(dirname "${idx_file}")"
+
+    local total_files=0
+    local total_size=0
+
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        local lhash lpath lsize
+        lhash="$(echo "${line}" | awk '{print $1}')"
+        lpath="$(echo "${line}" | awk '{print $2}')"
+        lsize="$(echo "${line}" | awk '{print $3}')"
+
+        if [[ "${lhash}" == "subindex" ]]; then
+            local sub_stats sub_files sub_size
+            sub_stats="$(index_total_stats "${base_dir}/${lpath}" "${new_visited}")"
+            sub_files="$(echo "${sub_stats}" | awk '{print $1}')"
+            sub_size="$(echo "${sub_stats}" | awk '{print $2}')"
+            total_files=$(( total_files + sub_files ))
+            total_size=$(( total_size + sub_size ))
+        else
+            total_files=$(( total_files + 1 ))
+            total_size=$(( total_size + lsize ))
+        fi
+    done < "${idx_file}"
+
+    echo "${total_files} ${total_size}"
+}
+
 case "${cmd}" in
     help)
         echo "Usage: findex <command> [options]"
@@ -78,6 +144,7 @@ case "${cmd}" in
         echo "  read [root]        Output index content to stdout, expanding sub-indexes"
         echo "  split <subfolder>  Create a sub-index for the given subfolder"
         echo "  merge <subfolder>  Merge a sub-index back into its parent index"
+        echo "  summary [root]     Show summary of index at root (default: current dir)"
         ;;
     index)
         root="${2:-.}"
@@ -227,5 +294,39 @@ case "${cmd}" in
 
         mv "${tmp_parent}" "${root_index}"
         rm "${sub_index}"
+        ;;
+    summary)
+        root="${2:-.}"
+        idx="${root}/.findex"
+        if [[ ! -f "${idx}" ]]; then
+            echo "Error: no index found at ${idx}" >&2
+            exit 1
+        fi
+
+        # Overall stats (includes all sub-indexes recursively)
+        overall_stats="$(index_total_stats "${idx}" "")"
+        overall_files="$(echo "${overall_stats}" | awk '{print $1}')"
+        overall_size="$(echo "${overall_stats}" | awk '{print $2}')"
+
+        echo "Index: ${idx}"
+        echo "  Files: ${overall_files}"
+        echo "  Size:  $(human_size "${overall_size}")"
+
+        # Per sub-index stats (direct sub-indexes only, but each totals recursively)
+        base_dir="$(dirname "${idx}")"
+        while IFS= read -r line; do
+            [[ -z "${line}" ]] && continue
+            lhash="$(echo "${line}" | awk '{print $1}')"
+            lpath="$(echo "${line}" | awk '{print $2}')"
+
+            if [[ "${lhash}" == "subindex" ]]; then
+                sub_stats="$(index_total_stats "${base_dir}/${lpath}" "")"
+                sub_files="$(echo "${sub_stats}" | awk '{print $1}')"
+                sub_size="$(echo "${sub_stats}" | awk '{print $2}')"
+                echo "  Sub-index: ${lpath}"
+                echo "    Files: ${sub_files}"
+                echo "    Size:  $(human_size "${sub_size}")"
+            fi
+        done < "${idx}"
         ;;
 esac
