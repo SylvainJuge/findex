@@ -88,6 +88,7 @@ human_size(){
 # Recursively compute stats (file count, total bytes) for an index file.
 # Outputs: "file_count total_bytes"
 # Args: idx_file  visited
+#   visited : colon-separated list of already-visited absolute paths (cycle detection)
 index_total_stats(){
     local idx_file="${1}"
     local visited="${2:-}"
@@ -115,15 +116,12 @@ index_total_stats(){
     while IFS= read -r line; do
         [[ -z "${line}" ]] && continue
         local lhash lpath lsize
-        lhash="$(echo "${line}" | awk '{print $1}')"
-        lpath="$(echo "${line}" | awk '{print $2}')"
-        lsize="$(echo "${line}" | awk '{print $3}')"
+        read -r lhash lpath lsize <<< "${line}"
 
         if [[ "${lhash}" == "subindex" ]]; then
             local sub_stats sub_files sub_size
             sub_stats="$(index_total_stats "${base_dir}/${lpath}" "${new_visited}")"
-            sub_files="$(echo "${sub_stats}" | awk '{print $1}')"
-            sub_size="$(echo "${sub_stats}" | awk '{print $2}')"
+            read -r sub_files sub_size <<< "${sub_stats}"
             total_files=$(( total_files + sub_files ))
             total_size=$(( total_size + sub_size ))
         else
@@ -305,8 +303,7 @@ case "${cmd}" in
 
         # Overall stats (includes all sub-indexes recursively)
         overall_stats="$(index_total_stats "${idx}" "")"
-        overall_files="$(echo "${overall_stats}" | awk '{print $1}')"
-        overall_size="$(echo "${overall_stats}" | awk '{print $2}')"
+        read -r overall_files overall_size <<< "${overall_stats}"
 
         echo "Index: ${idx}"
         echo "  Files: ${overall_files}"
@@ -316,13 +313,11 @@ case "${cmd}" in
         base_dir="$(dirname "${idx}")"
         while IFS= read -r line; do
             [[ -z "${line}" ]] && continue
-            lhash="$(echo "${line}" | awk '{print $1}')"
-            lpath="$(echo "${line}" | awk '{print $2}')"
+            read -r lhash lpath _ <<< "${line}"
 
             if [[ "${lhash}" == "subindex" ]]; then
                 sub_stats="$(index_total_stats "${base_dir}/${lpath}" "")"
-                sub_files="$(echo "${sub_stats}" | awk '{print $1}')"
-                sub_size="$(echo "${sub_stats}" | awk '{print $2}')"
+                read -r sub_files sub_size <<< "${sub_stats}"
                 echo "  Sub-index: ${lpath}"
                 echo "    Files: ${sub_files}"
                 echo "    Size:  $(human_size "${sub_size}")"
