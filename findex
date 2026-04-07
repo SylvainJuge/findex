@@ -115,19 +115,20 @@ print_summary_tree(){
 
     # Process sub-indexes first: print their trees, then accumulate their totals.
     # Sub-indexes always use ├── because the Files/Size totals always follow them.
-    for sub_path in "${sub_paths[@]}"; do
+    for sub_path in "${sub_paths[@]+"${sub_paths[@]}"}"; do
         echo "${indent}├── ${sub_path}"
         local sub_output
         sub_output="$(print_summary_tree "${base_dir}/${sub_path}" "${new_visited}" "${indent}│   ")"
-        local num_lines
-        num_lines="$(echo "${sub_output}" | wc -l)"
+        local -a sub_lines
+        mapfile -t sub_lines <<< "${sub_output}"
+        local num_sub_lines=${#sub_lines[@]}
         # Print tree lines (all but the trailing stats-data line)
-        if [[ ${num_lines} -gt 1 ]]; then
-            echo "${sub_output}" | head -n $(( num_lines - 1 ))
+        if [[ ${num_sub_lines} -gt 1 ]]; then
+            printf '%s\n' "${sub_lines[@]:0:$(( num_sub_lines - 1 ))}"
         fi
         # Accumulate stats from the trailing data line
         local sub_files sub_size
-        read -r sub_files sub_size <<< "$(echo "${sub_output}" | tail -1)"
+        read -r sub_files sub_size <<< "${sub_lines[-1]}"
         total_files=$(( total_files + sub_files ))
         total_size=$(( total_size + sub_size ))
     done
@@ -315,9 +316,10 @@ case "${cmd}" in
         # Print the tree; sub-indexes appear before their parent's totals.
         # The last line of output is a "file_count total_bytes" data line — strip it.
         tree_output="$(print_summary_tree "${idx}" "" "")"
-        num_lines="$(echo "${tree_output}" | wc -l)"
+        mapfile -t tree_lines <<< "${tree_output}"
+        num_lines=${#tree_lines[@]}
         if [[ ${num_lines} -gt 1 ]]; then
-            echo "${tree_output}" | head -n $(( num_lines - 1 ))
+            printf '%s\n' "${tree_lines[@]:0:$(( num_lines - 1 ))}"
         fi
         ;;
 esac
