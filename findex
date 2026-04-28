@@ -70,6 +70,77 @@ read_index(){
     done < "${idx_file}"
 }
 
+# Recursively print a summary tree for an index file.
+# Sub-indexes are printed first (recursively), then totals for this level.
+# The last line of output is always "file_count total_bytes" for the caller to accumulate.
+# Args: idx_file  visited  indent
+#   visited : colon-separated list of already-visited absolute paths (cycle detection)
+#   indent  : current indentation prefix (e.g. "│   ")
+print_summary_tree(){
+    local idx_file="${1}"
+    local visited="${2:-}"
+    local indent="${3:-}"
+
+    if [[ ! -f "${idx_file}" ]]; then
+        echo "0 0"
+        return 0
+    fi
+
+    local abs_idx
+    abs_idx="$(realpath "${idx_file}" 2>/dev/null || echo "${idx_file}")"
+
+    if [[ ":${visited}:" == *":${abs_idx}:"* ]]; then
+        echo "0 0"
+        return 0
+    fi
+    local new_visited="${visited}:${abs_idx}"
+
+    local base_dir
+    base_dir="$(dirname "${idx_file}")"
+
+    # Collect sub-index paths and accumulate direct file stats in one pass
+    local sub_paths=()
+    local total_files=0
+    local total_size=0
+
+    while IFS='|' read -r ltype lhash lpath lsize; do
+        [[ -z "${ltype}" ]] && continue
+        if [[ "${ltype}" == "s" ]]; then
+            sub_paths+=("${lpath}")
+        elif [[ "${ltype}" == "f" ]]; then
+            total_files=$(( total_files + 1 ))
+            total_size=$(( total_size + lsize ))
+        fi
+    done < "${idx_file}"
+
+    # Process sub-indexes first: print their trees, then accumulate their totals.
+    # Sub-indexes always use ├── because the Files/Size totals always follow them.
+    for sub_path in "${sub_paths[@]+"${sub_paths[@]}"}"; do
+        echo "${indent}├── ${sub_path}"
+        local sub_output
+        sub_output="$(print_summary_tree "${base_dir}/${sub_path}" "${new_visited}" "${indent}│   ")"
+        local -a sub_lines
+        mapfile -t sub_lines <<< "${sub_output}"
+        local num_sub_lines=${#sub_lines[@]}
+        # Print tree lines (all but the trailing stats-data line)
+        if [[ ${num_sub_lines} -gt 1 ]]; then
+            printf '%s\n' "${sub_lines[@]:0:$(( num_sub_lines - 1 ))}"
+        fi
+        # Accumulate stats from the trailing data line
+        local sub_files sub_size
+        read -r sub_files sub_size <<< "${sub_lines[-1]}"
+        total_files=$(( total_files + sub_files ))
+        total_size=$(( total_size + sub_size ))
+    done
+
+    # Print totals for this level; Size is always last (└──)
+    echo "${indent}├── Files: ${total_files}"
+    echo "${indent}└── Size:  $(numfmt --to=iec "${total_size}")"
+
+    # Trailing data line for parent accumulation (never displayed at top level)
+    echo "${total_files} ${total_size}"
+}
+
 case "${cmd}" in
     help)
         echo "Usage: findex <command> [options]"
@@ -79,6 +150,7 @@ case "${cmd}" in
         echo "  read [root]        Output index content to stdout, expanding sub-indexes"
         echo "  split <subfolder>  Create a sub-index for the given subfolder"
         echo "  merge <subfolder>  Merge a sub-index back into its parent index"
+        echo "  summary [root]     Show summary of index at root (default: current dir)"
         ;;
     index)
         root="${2:-.}"
@@ -230,5 +302,24 @@ case "${cmd}" in
 
         mv "${tmp_parent}" "${root_index}"
         rm "${sub_index}"
+        ;;
+    summary)
+        root="${2:-.}"
+        idx="${root}/.findex"
+        if [[ ! -f "${idx}" ]]; then
+            echo "Error: no index found at ${idx}" >&2
+            exit 1
+        fi
+
+        echo "${idx}"
+
+        # Print the tree; sub-indexes appear before their parent's totals.
+        # The last line of output is a "file_count total_bytes" data line — strip it.
+        tree_output="$(print_summary_tree "${idx}" "" "")"
+        mapfile -t tree_lines <<< "${tree_output}"
+        num_lines=${#tree_lines[@]}
+        if [[ ${num_lines} -gt 1 ]]; then
+            printf '%s\n' "${tree_lines[@]:0:$(( num_lines - 1 ))}"
+        fi
         ;;
 esac
