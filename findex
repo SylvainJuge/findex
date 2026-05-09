@@ -151,6 +151,7 @@ case "${cmd}" in
         echo "  split <subfolder>  Create a sub-index for the given subfolder"
         echo "  merge <subfolder>  Merge a sub-index back into its parent index"
         echo "  summary [root]     Show summary of index at root (default: current dir)"
+        echo "  delete [root]      Delete all .findex files under root (default: current dir)"
         ;;
     index)
         root="${2:-.}"
@@ -321,5 +322,13 @@ case "${cmd}" in
         if [[ ${num_lines} -gt 1 ]]; then
             printf '%s\n' "${tree_lines[@]:0:$(( num_lines - 1 ))}"
         fi
+        ;;
+    delete)
+        root="${2:-.}"
+        if [[ ! -d "${root}" ]]; then
+            echo "Error: directory not found: ${root}" >&2
+            exit 1
+        fi
+        find "${root}" -type f -name ".findex" -delete
         ;;
 esac
